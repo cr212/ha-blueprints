@@ -1,0 +1,158 @@
+blueprint:
+  name: VTherm Valve Position Scaled by Boiler Power
+  description: >
+    Sets a TRV's valve opening degree by dividing Versatile Thermostat's raw
+    requested valve opening percentage by the boiler's normalized power level
+    (so the primary/highest-demand valve opens closer to 100% when the boiler
+    is modulated down).
+  domain: automation
+  input:
+    vtherm_entity:
+      name: Versatile Thermostat Entity
+      description: The VTherm climate entity calculating the room demand.
+      selector:
+        entity:
+          domain: climate
+          integration: versatile_thermostat
+    valve_opening_entity:
+      name: TRV Valve Opening Degree Entity
+      description: The number entity controlling valve opening (e.g. number.trv_valve_opening_degree).
+      selector:
+        entity:
+          domain: number
+    valve_idle_entity:
+      name: TRV Valve Idle Opening Degree Entity
+      description: The number entity controlling valve opening when idle (e.g. number.trv_valve_idle_degree).
+      selector:
+        entity:
+          domain: number
+    valve_closing_entity:
+      name: TRV Valve Closing Degree Entity (Optional)
+      description: Optional closing degree entity (e.g. Sonoff TRVZB valve_closing_degree, set to 100 - opening).
+      default: ""
+      selector:
+        entity:
+          domain: number
+    boiler_power_entity:
+      name: Boiler Power / Modulation Sensor
+      description: Sensor representing boiler power (either 0-100% modulation or kW/Watts).
+      selector:
+        entity:
+          domain: sensor
+    max_boiler_power:
+      name: Boiler Power Reference (Divisor Scale)
+      description: >
+        Set to 100 if your boiler sensor reports 0–100%, or your boiler's max
+        power (e.g. 24 or 24000) if it reports kW/W.
+      default: 100
+      selector:
+        number:
+          min: 1
+          max: 100000
+          mode: box
+    min_boiler_ratio:
+      name: Minimum Boiler Ratio Floor
+      description: >
+        Prevents division-by-zero or extreme jumps when boiler power is very low
+        (e.g. 0.2 means boiler ratio is clamped to at least 20%).
+      default: 0.2
+      selector:
+        number:
+          min: 0.05
+          max: 1.0
+          step: 0.05
+    min_change_percent:
+      name: Minimum Valve Change Deadband (%)
+      description: Only move the valve if the new target differs by more than this percentage (endpoints 0% and 100% always apply).
+      default: 10
+      selector:
+        number:
+          min: 1
+          max: 50
+          unit_of_measurement: "%"
+    cooldown_seconds:
+      name: Minimum Cooldown Between Moves (seconds)
+      description: Wait time after moving the valve before another adjustment is permitted.
+      default: 60
+      selector:
+        number:
+          min: 0
+          max: 600
+          unit_of_measurement: s
+mode: single
+max_exceeded: silent
+
+variables:
+  vtherm: !input vtherm_entity
+  valve_open: !input valve_opening_entity
+  valve_idle: !input valve_idle_entity
+  valve_close: !input valve_closing_entity
+  boiler_sensor: !input boiler_power_entity
+  max_power: !input max_boiler_power
+  min_ratio: !input min_boiler_ratio
+  min_delta: !input min_change_percent
+  cooldown: !input cooldown_seconds
+trigger:
+  - platform: state
+    entity_id: !input vtherm_entity
+  - platform: state
+    entity_id: !input boiler_power_entity
+
+condition:
+  - condition: template
+    value_template: >
+      {{ states(boiler_sensor) | is_number
+         and (state_attr(vtherm, 'valve_open_percent') is number
+              or state_attr(vtherm, 'on_percent') is number) }}
+
+action:
+  - variables:
+      # VTherm exposes 'valve_open_percent' on over_climate/over_valve, or 'on_percent' (0.0-1.0)
+      raw_demand: >
+        {% set v_pct = state_attr(vtherm, 'valve_open_percent') %}
+        {% if v_pct is number %}
+          {{ v_pct | float(0) }}
+        {% else %}
+          {{ (state_attr(vtherm, 'on_percent') | float(0)) * 100 }}
+        {% endif %}
+      boiler_val: "{{ states(boiler_sensor) | float(0) }}"
+      # Normalize boiler power to a 0.0 - 1.0 ratio and clamp at min_ratio
+      boiler_ratio: "{{ [boiler_val / (max_power | float(100)), min_ratio | float(0.2)] | max }}"
+      # Divide VTherm demand by boiler ratio, clamp between 0 and 100, and round to integer
+      target_opening: >
+        {% if raw_demand | float(0) <= 10 %}
+          0
+        {% else %}
+          {{ [[((raw_demand | float(0)) / (boiler_ratio | float(1))) | round(0) | int, 0] | max, 100] | min }}
+        {% endif %}
+  - if:
+      - condition: template
+        value_template: >
+          {{ (current_opening | int) != (target_opening | int)
+             and ((delta | int) > (min_delta | int) or (target_opening | int) in [0, 100]) }}
+    then:
+      - service: number.set_value
+        target:
+          entity_id: "{{ valve_open }}"
+        data:
+          value: "{{ target_opening }}"
+      - if:
+          - condition: template
+            value_template: "{{ valve_close != '' and states(valve_close) not in ['unknown', 'unavailable'] }}"
+        then:
+          - service: number.set_value
+            target:
+              entity_id: "{{ valve_close }}"
+            data:
+              value: "{{ 100 - (target_opening | int) }}"
+      - if:
+          - condition: template
+            value_template: "{{ valve_idle != '' and states(valve_idle) not in ['unknown', 'unavailable'] }}"
+        then:
+          - service: number.set_value
+            target:
+              entity_id: "{{ valve_idle }}"
+            data:
+              value: "{{ target_opening }}"
+      - delay:
+          seconds: "{{ cooldown | int }}"
