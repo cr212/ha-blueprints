@@ -21,8 +21,9 @@ blueprint:
         entity:
           domain: number
     valve_idle_entity:
-      name: TRV Valve Idle Opening Degree Entity
+      name: TRV Valve Idle Opening Degree Entity (Optional)
       description: The number entity controlling valve opening when idle (e.g. number.trv_valve_idle_degree).
+      default: ""
       selector:
         entity:
           domain: number
