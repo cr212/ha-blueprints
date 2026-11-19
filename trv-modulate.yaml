@@ -126,6 +126,8 @@ action:
         {% else %}
           {{ [[((raw_demand | float(0)) / (boiler_ratio | float(1))) | round(0) | int, 0] | max, 100] | min }}
         {% endif %}
+      current_opening: "{{ states(valve_open) | int(-1) }}"
+      delta: "{{ (target_opening | int - current_opening | int) | abs }}"
   - if:
       - condition: template
         value_template: >
