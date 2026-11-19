@@ -80,6 +80,19 @@ blueprint:
           min: 0
           max: 600
           unit_of_measurement: s
+    non_condensing_mode:
+      name: Boiler is failing to condense
+      description: Boiler return temperature - for modulating when idle to force condensing
+      default: binary_sensor.opentherm_gateway_boiler_inefficient
+      selector:
+        entity:
+          domain: binary_sensor
+    enable_heat_dump:
+      name: Enable return-temp heat dump
+      description: Allow this radiator to partially open as a heat sink when non-condensing and below 18°C.
+      default: false
+      selector:
+        boolean:
 mode: single
 max_exceeded: silent
 
@@ -93,11 +106,15 @@ variables:
   min_ratio: !input min_boiler_ratio
   min_delta: !input min_change_percent
   cooldown: !input cooldown_seconds
+  noncondensing: !input non_condensing_mode
+  allow_heat_dump: !input enable_heat_dump
 trigger:
   - platform: state
     entity_id: !input vtherm_entity
   - platform: state
     entity_id: !input boiler_power_entity
+  - platform: state
+    entity_id: !input non_condensing_mode
 
 condition:
   - condition: template
@@ -119,10 +136,21 @@ action:
       boiler_val: "{{ states(boiler_sensor) | float(0) }}"
       # Normalize boiler power to a 0.0 - 1.0 ratio and clamp at min_ratio
       boiler_ratio: "{{ [boiler_val / (max_power | float(100)), min_ratio | float(0.2)] | max }}"
-      # Divide VTherm demand by boiler ratio, clamp between 0 and 100, and round to integer
+      # Divide VTherm demand by boiler ratio, clamp between 0 and 100, and round
+      # to integer.  If raw_demand is off but the boiler is not managing to
+      # condense, use the radiator as a heat dump if configured:      
       target_opening: >
-        {% if raw_demand | float(0) <= 10 %}
-          0
+        {% set temp = state_attr(vtherm, 'current_temperature') | float(99) %}
+        {% set dump_enabled = allow_heat_dump in [true, 'true', 'True', 'on', '1', 1] %}
+        {% set held_pos = [[states(valve_open) | int(0), 0] | max, 100] | min %}
+        {% if raw_demand | float(0) <= 1 %}
+          {% if dump_enabled and is_state(noncondensing, 'on') and temp < 17.5 %}
+                50
+          {% elif dump_enabled and is_state(noncondensing, 'on') and temp < 18.0 %}
+            {{ held_pos }}
+          {% else %}
+            0
+          {% endif %}
         {% else %}
           {{ [[((raw_demand | float(0)) / (boiler_ratio | float(1))) | round(0) | int, 0] | max, 100] | min }}
         {% endif %}
