@@ -144,9 +144,9 @@ action:
         {% set dump_enabled = allow_heat_dump in [true, 'true', 'True', 'on', '1', 1] %}
         {% set held_pos = [[states(valve_open) | int(0), 0] | max, 100] | min %}
         {% if raw_demand | float(0) <= 1 %}
-          {% if dump_enabled and is_state(noncondensing, 'on') and temp < 17.5 %}
+          {% if dump_enabled and is_state(noncondensing, 'on') and temp < 17.0 %}
                 50
-          {% elif dump_enabled and is_state(noncondensing, 'on') and temp < 18.0 %}
+          {% elif dump_enabled and is_state(noncondensing, 'on') and temp < 18.5 %}
             {{ held_pos }}
           {% else %}
             0
